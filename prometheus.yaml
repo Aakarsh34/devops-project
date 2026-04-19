@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    rule_files:
+      - /etc/prometheus/rules/alerts.yml
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ['localhost:9090']
+      - job_name: generic-app
+        metrics_path: /metrics
+        static_configs:
+          - targets: ['generic-app-service.default.svc.cluster.local:80']
+  alerts.yml: |
+    groups:
+      - name: generic-app-alerts
+        rules:
+          - alert: GenericAppDown
+            expr: up{job="generic-app"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: Generic application target is down
+              description: Prometheus has not been able to scrape the generic application for more than 1 minute.
+          - alert: GenericAppTrafficStopped
+            expr: rate(app_requests_total[2m]) == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: Generic application request traffic has stopped
+              description: The application has reported no request traffic for 2 minutes.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  type: NodePort
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+      nodePort: 30090

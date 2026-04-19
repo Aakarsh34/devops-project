@@ -1,0 +1,9 @@
+docker-workflow
+github
+pipeline-stage-view
+workflow-aggregator
+credentials-binding
+plain-credentials
+kubernetes-cli
+git
+github-branch-source

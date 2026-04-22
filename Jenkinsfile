@@ -41,8 +41,8 @@ pipeline {
                         env.START_CMD = 'npm start'
                     } else if (fileExists('requirements.txt') || fileExists('pyproject.toml')) {
                         env.APP_STACK = 'python'
-                        env.BUILD_CMD = "python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi"
-                        env.TEST_CMD = fileExists('pytest.ini') || fileExists('tests') ? 'pytest' : ''
+                        env.BUILD_CMD = ". .jenkins-venv/bin/activate 2>/dev/null || true; python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi"
+                        env.TEST_CMD = fileExists('pytest.ini') || fileExists('tests') ? '. .jenkins-venv/bin/activate && pytest' : ''
                         env.DOCKER_BASE = 'python:3.11-slim'
                         env.START_CMD = 'gunicorn --bind 0.0.0.0:5000 app:app'
                     } else if (fileExists('Makefile') || fileExists('CMakeLists.txt') || sh(script: "ls *.cpp >/dev/null 2>&1", returnStatus: true) == 0) {

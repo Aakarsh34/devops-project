@@ -4,6 +4,7 @@ services:
   jenkins:
     build:
       context: ./jenkins
+    user: "0:0"
     container_name: local-jenkins
     restart: unless-stopped
     ports:

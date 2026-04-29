@@ -31,48 +31,41 @@ pipeline {
         stage('Detect Stack') {
             steps {
                 script {
-                    def stack = null
-                    def buildCmd = ''
-                    def testCmd = ''
-                    def dockerBuildCmd = ''
-                    def baseImage = ''
-                    def startCommand = ''
+                    boolean hasNode = fileExists('package.json')
+                    boolean hasPython = fileExists('requirements.txt') || fileExists('pyproject.toml') || fileExists('app.py')
+                    boolean hasCpp = fileExists('CMakeLists.txt') || fileExists('Makefile')
 
-                    if (fileExists('package.json')) {
-                        stack = 'node'
-                        buildCmd = 'npm install'
-                        testCmd = 'if npm run 2>/dev/null | grep -q " test"; then npm test; else echo "No npm test script found, skipping tests."; fi'
-                        dockerBuildCmd = 'npm install'
-                        baseImage = 'node:20-alpine'
-                        startCommand = 'npm start'
-                    } else if (fileExists('requirements.txt') || fileExists('pyproject.toml') || fileExists('app.py')) {
-                        stack = 'python'
-                        buildCmd = 'python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
-                        testCmd = (fileExists('pytest.ini') || fileExists('tests')) ? '. .jenkins-venv/bin/activate && pytest' : 'echo "No pytest suite found, skipping tests."'
-                        dockerBuildCmd = 'python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
-                        baseImage = 'python:3.11-slim'
-                        startCommand = 'gunicorn --bind 0.0.0.0:5000 app:app'
-                    } else if (fileExists('CMakeLists.txt') || fileExists('Makefile')) {
-                        stack = 'cpp'
-                        buildCmd = fileExists('CMakeLists.txt') ? 'cmake -S . -B build && cmake --build build' : 'make'
-                        testCmd = fileExists('CMakeLists.txt') ? 'cd build && ctest --output-on-failure || echo "No CTest suite found, skipping tests."' : 'echo "No automated C++ tests configured, skipping tests."'
-                        dockerBuildCmd = buildCmd
-                        baseImage = 'gcc:13'
-                        startCommand = './app'
-                    }
-
-                    if (!stack) {
+                    if (hasNode) {
+                        env.STACK = 'node'
+                        env.BUILD_CMD = 'npm install'
+                        env.TEST_CMD = 'if npm run 2>/dev/null | grep -q " test"; then npm test; else echo "No npm test script found, skipping tests."; fi'
+                        env.DOCKER_BUILD_CMD = 'npm install'
+                        env.BASE_IMAGE = 'node:20-alpine'
+                        env.START_COMMAND = 'npm start'
+                    } else if (hasPython) {
+                        env.STACK = 'python'
+                        env.BUILD_CMD = 'python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
+                        env.TEST_CMD = (fileExists('pytest.ini') || fileExists('tests')) ? '. .jenkins-venv/bin/activate && pytest' : 'echo "No pytest suite found, skipping tests."'
+                        env.DOCKER_BUILD_CMD = 'python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
+                        env.BASE_IMAGE = 'python:3.11-slim'
+                        env.START_COMMAND = 'gunicorn --bind 0.0.0.0:5000 app:app'
+                    } else if (hasCpp) {
+                        env.STACK = 'cpp'
+                        env.BUILD_CMD = fileExists('CMakeLists.txt') ? 'cmake -S . -B build && cmake --build build' : 'make'
+                        env.TEST_CMD = fileExists('CMakeLists.txt') ? 'cd build && ctest --output-on-failure || echo "No CTest suite found, skipping tests."' : 'echo "No automated C++ tests configured, skipping tests."'
+                        env.DOCKER_BUILD_CMD = env.BUILD_CMD
+                        env.BASE_IMAGE = 'gcc:13'
+                        env.START_COMMAND = './app'
+                    } else {
                         error('Unsupported repository: could not detect Python, Node.js, or C++ build files.')
                     }
 
-                    env.STACK = stack
-                    env.BUILD_CMD = buildCmd
-                    env.TEST_CMD = testCmd
-                    env.DOCKER_BUILD_CMD = dockerBuildCmd
-                    env.BASE_IMAGE = baseImage
-                    env.START_COMMAND = startCommand
                     env.IMAGE_TAG = "${env.BUILD_NUMBER}"
                     env.FULL_IMAGE = "${params.DOCKER_IMAGE_REPO}:${env.IMAGE_TAG}"
+
+                    if (!env.BUILD_CMD?.trim()) {
+                        error("Build command was not prepared for detected stack '${env.STACK}'")
+                    }
 
                     echo "Detected stack: ${env.STACK}"
                     echo "Build command prepared for ${env.STACK}"

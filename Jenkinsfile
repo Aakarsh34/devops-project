@@ -31,21 +31,25 @@ pipeline {
         stage('Detect Stack') {
             steps {
                 script {
-                    if (fileExists('package.json')) {
+                    boolean isNode = fileExists('package.json')
+                    boolean isPython = fileExists('app.py') || fileExists('requirements.txt') || fileExists('pyproject.toml') || fileExists('wsgi.py') || fileExists('manage.py')
+                    boolean isCpp = fileExists('CMakeLists.txt') || fileExists('Makefile')
+
+                    if (isNode) {
                         env.STACK = 'node'
                         env.BUILD_CMD = 'npm install'
                         env.TEST_CMD = 'if npm run 2>/dev/null | grep -q " test"; then npm test; else echo "No npm test script found, skipping tests."; fi'
                         env.DOCKER_BUILD_CMD = 'npm install'
                         env.BASE_IMAGE = 'node:20-alpine'
                         env.START_COMMAND = 'npm start'
-                    } else if (fileExists('requirements.txt') || fileExists('pyproject.toml')) {
+                    } else if (isPython) {
                         env.STACK = 'python'
-                        env.BUILD_CMD = 'python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi'
+                        env.BUILD_CMD = 'python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
                         env.TEST_CMD = (fileExists('pytest.ini') || fileExists('tests')) ? '. .jenkins-venv/bin/activate && pytest' : 'echo "No pytest suite found, skipping tests."'
-                        env.DOCKER_BUILD_CMD = 'python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi'
+                        env.DOCKER_BUILD_CMD = 'python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
                         env.BASE_IMAGE = 'python:3.11-slim'
                         env.START_COMMAND = 'gunicorn --bind 0.0.0.0:5000 app:app'
-                    } else if (fileExists('CMakeLists.txt') || fileExists('Makefile')) {
+                    } else if (isCpp) {
                         env.STACK = 'cpp'
                         env.BUILD_CMD = fileExists('CMakeLists.txt') ? 'cmake -S . -B build && cmake --build build' : 'make'
                         env.TEST_CMD = fileExists('CMakeLists.txt') ? 'cd build && ctest --output-on-failure || echo "No CTest suite found, skipping tests."' : 'echo "No automated C++ tests configured, skipping tests."'
@@ -59,6 +63,7 @@ pipeline {
                     env.IMAGE_TAG = "${env.BUILD_NUMBER}"
                     env.FULL_IMAGE = "${params.DOCKER_IMAGE_REPO}:${env.IMAGE_TAG}"
                     echo "Detected stack: ${env.STACK}"
+                    echo "Build command prepared for ${env.STACK}"
                 }
             }
         }
@@ -103,11 +108,16 @@ pipeline {
                 expression { return fileExists('deployment.yaml') }
             }
             steps {
-                withKubeConfig([credentialsId: 'kubeconfig']) {
+                sh '''
+                    cp /var/jenkins_home/.kube/config .jenkins-kubeconfig
+                    sed -i 's#https://127.0.0.1:#https://host.docker.internal:#g' .jenkins-kubeconfig
+                    sed -i 's#https://localhost:#https://host.docker.internal:#g' .jenkins-kubeconfig
+                '''
+                withEnv(["KUBECONFIG=${env.WORKSPACE}/.jenkins-kubeconfig"]) {
                     sh """
-                        kubectl apply -f deployment.yaml -n ${params.KUBE_NAMESPACE}
-                        if [ -f service.yaml ]; then kubectl apply -f service.yaml -n ${params.KUBE_NAMESPACE}; fi
-                        if [ -f hpa.yaml ]; then kubectl apply -f hpa.yaml -n ${params.KUBE_NAMESPACE}; fi
+                        kubectl apply --validate=false -f deployment.yaml -n ${params.KUBE_NAMESPACE}
+                        if [ -f service.yaml ]; then kubectl apply --validate=false -f service.yaml -n ${params.KUBE_NAMESPACE}; fi
+                        if [ -f hpa.yaml ]; then kubectl apply --validate=false -f hpa.yaml -n ${params.KUBE_NAMESPACE}; fi
                         kubectl set image deployment/generic-app generic-app='${env.FULL_IMAGE}' -n ${params.KUBE_NAMESPACE}
                         kubectl rollout status deployment/generic-app -n ${params.KUBE_NAMESPACE} --timeout=180s
                     """

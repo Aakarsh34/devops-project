@@ -31,24 +31,32 @@ pipeline {
         stage('Detect Stack') {
             steps {
                 script {
-                    boolean hasNode = fileExists('package.json')
-                    boolean hasPython = fileExists('requirements.txt') || fileExists('pyproject.toml') || fileExists('app.py')
-                    boolean hasCpp = fileExists('CMakeLists.txt') || fileExists('Makefile')
+                    def pythonSignals = ['app.py', 'requirements.txt', 'pyproject.toml', 'wsgi.py', 'manage.py']
+                    def nodeSignals = ['package.json']
+                    def cppSignals = ['CMakeLists.txt', 'Makefile']
 
-                    if (hasNode) {
-                        env.STACK = 'node'
-                        env.BUILD_CMD = 'npm install'
-                        env.TEST_CMD = 'if npm run 2>/dev/null | grep -q " test"; then npm test; else echo "No npm test script found, skipping tests."; fi'
-                        env.DOCKER_BUILD_CMD = 'npm install'
-                        env.BASE_IMAGE = 'node:20-alpine'
-                        env.START_COMMAND = 'npm start'
-                    } else if (hasPython) {
+                    boolean hasPython = pythonSignals.any { fileExists(it) }
+                    boolean hasNode = nodeSignals.any { fileExists(it) }
+                    boolean hasCpp = cppSignals.any { fileExists(it) }
+
+                    echo "Python signals found: ${pythonSignals.findAll { fileExists(it) }}"
+                    echo "Node signals found: ${nodeSignals.findAll { fileExists(it) }}"
+                    echo "C++ signals found: ${cppSignals.findAll { fileExists(it) }}"
+
+                    if (hasPython) {
                         env.STACK = 'python'
                         env.BUILD_CMD = 'python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
                         env.TEST_CMD = (fileExists('pytest.ini') || fileExists('tests')) ? '. .jenkins-venv/bin/activate && pytest' : 'echo "No pytest suite found, skipping tests."'
                         env.DOCKER_BUILD_CMD = 'python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; else echo "No Python dependency manifest found, skipping dependency install."; fi'
                         env.BASE_IMAGE = 'python:3.11-slim'
                         env.START_COMMAND = 'gunicorn --bind 0.0.0.0:5000 app:app'
+                    } else if (hasNode) {
+                        env.STACK = 'node'
+                        env.BUILD_CMD = 'npm install'
+                        env.TEST_CMD = 'if npm run 2>/dev/null | grep -q " test"; then npm test; else echo "No npm test script found, skipping tests."; fi'
+                        env.DOCKER_BUILD_CMD = 'npm install'
+                        env.BASE_IMAGE = 'node:20-alpine'
+                        env.START_COMMAND = 'npm start'
                     } else if (hasCpp) {
                         env.STACK = 'cpp'
                         env.BUILD_CMD = fileExists('CMakeLists.txt') ? 'cmake -S . -B build && cmake --build build' : 'make'
@@ -57,15 +65,11 @@ pipeline {
                         env.BASE_IMAGE = 'gcc:13'
                         env.START_COMMAND = './app'
                     } else {
-                        error('Unsupported repository: could not detect Python, Node.js, or C++ build files.')
+                        error('Unsupported repository: could not detect Python, Node.js, or C++ build files in the checked-out workspace.')
                     }
 
                     env.IMAGE_TAG = "${env.BUILD_NUMBER}"
                     env.FULL_IMAGE = "${params.DOCKER_IMAGE_REPO}:${env.IMAGE_TAG}"
-
-                    if (!env.BUILD_CMD?.trim()) {
-                        error("Build command was not prepared for detected stack '${env.STACK}'")
-                    }
 
                     echo "Detected stack: ${env.STACK}"
                     echo "Build command prepared for ${env.STACK}"

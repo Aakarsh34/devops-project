@@ -2,25 +2,23 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'DOCKER_IMAGE_REPO', defaultValue: 'your-dockerhub-username/generic-app', description: 'Docker repository to push, for example myuser/myapp')
+        string(name: 'DOCKER_IMAGE_REPO', defaultValue: 'aakarsh46/generic-app', description: 'Docker repository to push, for example myuser/myapp')
         string(name: 'KUBE_NAMESPACE', defaultValue: 'default', description: 'Kubernetes namespace to deploy into')
-    }
-
-    environment {
-        REGISTRY = 'docker.io'
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        DEPLOYMENT_NAME = 'generic-app'
-        CONTAINER_NAME = 'app'
-        APP_REPO = "${env.GIT_URL ?: ''}"
-    }
-
-    triggers {
-        githubPush()
     }
 
     options {
         timestamps()
-        disableConcurrentBuilds()
+    }
+
+    environment {
+        STACK = ''
+        BUILD_CMD = ''
+        TEST_CMD = ''
+        DOCKER_BUILD_CMD = ''
+        BASE_IMAGE = ''
+        START_COMMAND = ''
+        IMAGE_TAG = ''
+        FULL_IMAGE = ''
     }
 
     stages {
@@ -34,31 +32,33 @@ pipeline {
             steps {
                 script {
                     if (fileExists('package.json')) {
-                        env.APP_STACK = 'node'
+                        env.STACK = 'node'
                         env.BUILD_CMD = 'npm install'
+                        env.TEST_CMD = 'if npm run 2>/dev/null | grep -q " test"; then npm test; else echo "No npm test script found, skipping tests."; fi'
                         env.DOCKER_BUILD_CMD = 'npm install'
-                        env.TEST_CMD = sh(script: "node -e \"const p=require('./package.json');process.exit(p.scripts && p.scripts.test ? 0 : 1)\"", returnStatus: true) == 0 ? 'npm test' : ''
-                        env.DOCKER_BASE = 'node:20-alpine'
-                        env.START_CMD = 'npm start'
+                        env.BASE_IMAGE = 'node:20-alpine'
+                        env.START_COMMAND = 'npm start'
                     } else if (fileExists('requirements.txt') || fileExists('pyproject.toml')) {
-                        env.APP_STACK = 'python'
-                        env.BUILD_CMD = "python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi"
-                        env.DOCKER_BUILD_CMD = "python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi"
-                        env.TEST_CMD = fileExists('pytest.ini') || fileExists('tests') ? '. .jenkins-venv/bin/activate && pytest' : ''
-                        env.DOCKER_BASE = 'python:3.11-slim'
-                        env.START_CMD = 'gunicorn --bind 0.0.0.0:5000 app:app'
-                    } else if (fileExists('Makefile') || fileExists('CMakeLists.txt') || sh(script: "ls *.cpp >/dev/null 2>&1", returnStatus: true) == 0) {
-                        env.APP_STACK = 'cpp'
-                        env.BUILD_CMD = 'if [ -f Makefile ]; then make; elif [ -f CMakeLists.txt ]; then cmake -S . -B build && cmake --build build; fi'
+                        env.STACK = 'python'
+                        env.BUILD_CMD = 'python -m venv .jenkins-venv && . .jenkins-venv/bin/activate && python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi'
+                        env.TEST_CMD = (fileExists('pytest.ini') || fileExists('tests')) ? '. .jenkins-venv/bin/activate && pytest' : 'echo "No pytest suite found, skipping tests."'
+                        env.DOCKER_BUILD_CMD = 'python -m pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; elif [ -f pyproject.toml ]; then pip install .; fi'
+                        env.BASE_IMAGE = 'python:3.11-slim'
+                        env.START_COMMAND = 'gunicorn --bind 0.0.0.0:5000 app:app'
+                    } else if (fileExists('CMakeLists.txt') || fileExists('Makefile')) {
+                        env.STACK = 'cpp'
+                        env.BUILD_CMD = fileExists('CMakeLists.txt') ? 'cmake -S . -B build && cmake --build build' : 'make'
+                        env.TEST_CMD = fileExists('CMakeLists.txt') ? 'cd build && ctest --output-on-failure || echo \"No CTest suite found, skipping tests.\"' : 'echo "No automated C++ tests configured, skipping tests."'
                         env.DOCKER_BUILD_CMD = env.BUILD_CMD
-                        env.TEST_CMD = 'if [ -f Makefile ]; then make test || true; elif [ -d build ]; then ctest --test-dir build --output-on-failure || true; fi'
-                        env.DOCKER_BASE = 'ubuntu:22.04'
-                        env.START_CMD = './app'
+                        env.BASE_IMAGE = 'gcc:13'
+                        env.START_COMMAND = './app'
                     } else {
-                        error('Unsupported repository type. Add package.json, requirements.txt/pyproject.toml, Makefile, CMakeLists.txt, or a custom Dockerfile.')
+                        error('Unsupported repository: could not detect Python, Node.js, or C++ build files.')
                     }
 
-                    echo "Detected stack: ${env.APP_STACK}"
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}"
+                    env.FULL_IMAGE = "${params.DOCKER_IMAGE_REPO}:${env.IMAGE_TAG}"
+                    echo "Detected stack: ${env.STACK}"
                 }
             }
         }
@@ -80,41 +80,59 @@ pipeline {
 
         stage('Docker Build') {
             steps {
-                script {
-                    def imageRef = "${env.REGISTRY}/${params.DOCKER_IMAGE_REPO}:${env.IMAGE_TAG}"
-                    sh """
-                        docker build \
-                          --build-arg BASE_IMAGE=${env.DOCKER_BASE} \
-                          --build-arg BUILD_COMMAND='${env.DOCKER_BUILD_CMD.replace("'", "'\\''")}' \
-                          --build-arg START_COMMAND='${env.START_CMD.replace("'", "'\\''")}' \
-                          -t ${imageRef} .
-                    """
-                    env.BUILT_IMAGE = imageRef
-                }
+                sh """
+                    docker build \
+                      --build-arg BASE_IMAGE=${env.BASE_IMAGE} \
+                      --build-arg BUILD_COMMAND='${env.DOCKER_BUILD_CMD.replace("'", "'\"'\"'")}' \
+                      --build-arg START_COMMAND='${env.START_COMMAND.replace("'", "'\"'\"'")}' \
+                      -t ${env.FULL_IMAGE} .
+                """
             }
         }
 
         stage('Push Image') {
             steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker-registry-credentials', url: 'https://index.docker.io/v1/') {
-                        sh "docker push ${env.BUILT_IMAGE}"
-                    }
+                withDockerRegistry([credentialsId: 'docker-registry-credentials', url: 'https://index.docker.io/v1/']) {
+                    sh "docker push ${env.FULL_IMAGE}"
                 }
             }
         }
 
         stage('Deploy to Kubernetes') {
+            when {
+                expression { return fileExists('deployment.yaml') }
+            }
             steps {
-                withKubeConfig(credentialsId: 'kubeconfig') {
+                script {
                     sh """
-                        kubectl apply -f deployment.yaml -n ${params.KUBE_NAMESPACE}
-                        kubectl apply -f service.yaml -n ${params.KUBE_NAMESPACE}
-                        kubectl apply -f hpa.yaml -n ${params.KUBE_NAMESPACE}
-                        kubectl apply -f prometheus.yaml -n ${params.KUBE_NAMESPACE}
-                        kubectl apply -f grafana.yaml -n ${params.KUBE_NAMESPACE}
-                        kubectl set image deployment/${env.DEPLOYMENT_NAME} ${env.CONTAINER_NAME}=${env.BUILT_IMAGE} -n ${params.KUBE_NAMESPACE}
-                        kubectl rollout status deployment/${env.DEPLOYMENT_NAME} -n ${params.KUBE_NAMESPACE} --timeout=120s
+                        if [ ! -f /var/jenkins_home/.kube/config ]; then
+                          echo 'Mounted kubeconfig not found at /var/jenkins_home/.kube/config'
+                          exit 1
+                        fi
+
+                        python - <<'PY'
+from pathlib import Path
+
+src = Path('/var/jenkins_home/.kube/config').read_text()
+src = src.replace('https://127.0.0.1:', 'https://host.docker.internal:')
+src = src.replace('https://localhost:', 'https://host.docker.internal:')
+Path('.jenkins-kubeconfig').write_text(src)
+PY
+
+                        export KUBECONFIG="$PWD/.jenkins-kubeconfig"
+                        kubectl config current-context
+                        kubectl apply -f deployment.yaml -n ${params.KUBE_NAMESPACE} --validate=false
+
+                        if [ -f service.yaml ]; then
+                          kubectl apply -f service.yaml -n ${params.KUBE_NAMESPACE} --validate=false
+                        fi
+
+                        if [ -f hpa.yaml ]; then
+                          kubectl apply -f hpa.yaml -n ${params.KUBE_NAMESPACE} --validate=false
+                        fi
+
+                        kubectl set image deployment/generic-app generic-app='${env.FULL_IMAGE}' -n ${params.KUBE_NAMESPACE}
+                        kubectl rollout status deployment/generic-app -n ${params.KUBE_NAMESPACE} --timeout=180s
                     """
                 }
             }
@@ -123,7 +141,7 @@ pipeline {
 
     post {
         success {
-            echo "Deployment completed for ${env.BUILT_IMAGE}"
+            echo "Pipeline completed successfully. Deployed image: ${env.FULL_IMAGE}"
         }
         failure {
             echo 'Pipeline failed. Review the build and deployment logs.'

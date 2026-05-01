@@ -10,17 +10,6 @@ pipeline {
         timestamps()
     }
 
-    environment {
-        STACK = ''
-        BUILD_CMD = ''
-        TEST_CMD = ''
-        DOCKER_BUILD_CMD = ''
-        BASE_IMAGE = ''
-        START_COMMAND = ''
-        IMAGE_TAG = ''
-        FULL_IMAGE = ''
-    }
-
     stages {
         stage('Checkout') {
             steps {
@@ -118,7 +107,7 @@ pipeline {
                         kubectl apply --validate=false -f deployment.yaml -n ${params.KUBE_NAMESPACE}
                         if [ -f service.yaml ]; then kubectl apply --validate=false -f service.yaml -n ${params.KUBE_NAMESPACE}; fi
                         if [ -f hpa.yaml ]; then kubectl apply --validate=false -f hpa.yaml -n ${params.KUBE_NAMESPACE}; fi
-                        kubectl set image deployment/generic-app generic-app='${env.FULL_IMAGE}' -n ${params.KUBE_NAMESPACE}
+                        kubectl set image deployment/generic-app app='${env.FULL_IMAGE}' -n ${params.KUBE_NAMESPACE}
                         kubectl rollout status deployment/generic-app -n ${params.KUBE_NAMESPACE} --timeout=180s
                     """
                 }
